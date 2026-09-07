@@ -1,21 +1,161 @@
 import './style.css'
 
-document.querySelector('#app').innerHTML = `
-  <h1>뉴비톤 연습</h1>
-  <p>이름을 입력해보세요.</p>
+const STORAGE_KEY = 'babguham-meetings'
+const app = document.querySelector('#app')
 
-  <input id="nameInput" placeholder="이름 입력">
+const escapeHtml = (value) => String(value)
+  .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  .replaceAll('"', '&quot;').replaceAll("'", '&#039;')
 
-  <button id="helloButton">인사하기</button>
+const loadMeetings = () => {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? []
+  } catch {
+    return []
+  }
+}
 
-  <p id="result"></p>
-`
+const saveMeetings = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(meetings))
+let meetings = loadMeetings()
 
-const button = document.querySelector('#helloButton')
+function formatTime(time) {
+  const [hour, minute] = time.split(':')
+  const date = new Date()
+  date.setHours(Number(hour), Number(minute))
+  return new Intl.DateTimeFormat('ko-KR', { hour: 'numeric', minute: '2-digit', hour12: true }).format(date)
+}
 
-button.addEventListener('click', () => {
-  const name = document.querySelector('#nameInput').value
+function meetingCard(meeting) {
+  const isFull = meeting.currentCount >= meeting.capacity
+  return `
+    <article class="meeting-card">
+      <div class="meeting-card__top">
+        <div class="place-icon" aria-hidden="true">🍚</div>
+        <div>
+          <p class="meeting-card__eyebrow">오늘의 밥 약속</p>
+          <h2>${escapeHtml(meeting.place)}</h2>
+        </div>
+        <span class="status ${isFull ? 'status--full' : ''}">${isFull ? '모집 완료' : '모집 중'}</span>
+      </div>
+      <div class="meeting-card__details">
+        <div><span>메뉴</span><strong>${escapeHtml(meeting.menu)}</strong></div>
+        <div><span>시간</span><strong>${formatTime(meeting.time)}</strong></div>
+      </div>
+      <div class="meeting-card__footer">
+        <div class="count">
+          <span class="count__people" aria-hidden="true">${'●'.repeat(meeting.currentCount)}${'○'.repeat(meeting.capacity - meeting.currentCount)}</span>
+          <strong>현재 ${meeting.currentCount} / ${meeting.capacity}명</strong>
+        </div>
+        <button class="join-button" data-join-id="${meeting.id}" ${isFull ? 'disabled' : ''}>
+          ${isFull ? '모집 완료' : '같이 먹기'}
+        </button>
+      </div>
+    </article>`
+}
 
-  document.querySelector('#result').textContent =
-    `${name}님 안녕하세요!`
+function renderList() {
+  app.innerHTML = `
+    <header class="site-header">
+      <a class="brand" href="#" data-view="list"><span class="brand__mark">밥</span><span>밥구함</span></a>
+      <button class="header-button" data-view="create">+ 밥친구 모집하기</button>
+    </header>
+    <main class="page-shell">
+      <section class="hero">
+        <p class="eyebrow">KOREA UNIVERSITY · LUNCH MATE</p>
+        <h1>오늘 점심,<br><em>혼자 먹지 마세요.</em></h1>
+        <p class="hero__description">지금 함께 밥 먹을 친구를 찾고,<br>가볍게 한 끼를 시작해보세요.</p>
+        <button class="primary-button" data-view="create">밥친구 모집하기 <span>→</span></button>
+      </section>
+      <section class="meeting-section" aria-labelledby="meeting-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">OPEN TABLES</p><h2 id="meeting-title">지금 모집 중인 밥약속</h2></div>
+          <p>${meetings.filter((meeting) => meeting.currentCount < meeting.capacity).length}개의 열린 약속</p>
+        </div>
+        <div class="meeting-grid">
+          ${meetings.length ? meetings.map(meetingCard).join('') : `
+            <div class="empty-state">
+              <div>🍽️</div><h3>아직 등록된 밥약속이 없어요</h3>
+              <p>오늘의 첫 밥친구를 직접 모집해보세요.</p>
+              <button class="text-button" data-view="create">첫 모집글 만들기 →</button>
+            </div>`}
+        </div>
+      </section>
+    </main>
+    <footer>밥구함 · 고려대 학생들의 가벼운 한 끼</footer>
+    <div class="toast" role="status" aria-live="polite"></div>`
+}
+
+function renderCreate() {
+  app.innerHTML = `
+    <header class="site-header">
+      <a class="brand" href="#" data-view="list"><span class="brand__mark">밥</span><span>밥구함</span></a>
+      <button class="back-button" data-view="list">← 목록으로</button>
+    </header>
+    <main class="form-page">
+      <section class="form-intro">
+        <p class="eyebrow">CREATE A TABLE</p>
+        <h1>함께 먹으면<br><em>더 맛있으니까.</em></h1>
+        <p>간단한 정보만 입력하면<br>바로 밥친구를 모집할 수 있어요.</p>
+        <div class="form-intro__note"><span>01</span><p><strong>모집자는 자동으로 참여해요.</strong><br>현재 인원은 1명부터 시작합니다.</p></div>
+      </section>
+      <section class="form-card" aria-labelledby="form-title">
+        <div class="form-card__heading"><span>🍚</span><div><p>새로운 밥약속</p><h2 id="form-title">어디서 무엇을 먹을까요?</h2></div></div>
+        <form id="meetingForm">
+          <label><span>장소</span><input name="place" type="text" placeholder="예: 고른햇살" maxlength="20" required></label>
+          <label><span>메뉴</span><input name="menu" type="text" placeholder="예: 제육덮밥" maxlength="30" required></label>
+          <div class="form-row">
+            <label><span>시간</span><input name="time" type="time" required></label>
+            <label><span>모집 인원</span><select name="capacity" required>
+              <option value="2">2명</option><option value="3">3명</option><option value="4" selected>4명</option>
+              <option value="5">5명</option><option value="6">6명</option><option value="7">7명</option><option value="8">8명</option>
+            </select></label>
+          </div>
+          <button class="submit-button" type="submit">밥친구 모집하기 <span>→</span></button>
+        </form>
+      </section>
+    </main>`
+  document.querySelector('input[name="place"]').focus()
+}
+
+function showToast(message) {
+  const toast = document.querySelector('.toast')
+  if (!toast) return
+  toast.textContent = message
+  toast.classList.add('toast--visible')
+  window.setTimeout(() => toast.classList.remove('toast--visible'), 2200)
+}
+
+document.addEventListener('click', (event) => {
+  const viewButton = event.target.closest('[data-view]')
+  const joinButton = event.target.closest('[data-join-id]')
+  if (viewButton) {
+    event.preventDefault()
+    viewButton.dataset.view === 'create' ? renderCreate() : renderList()
+  }
+  if (joinButton) {
+    const meeting = meetings.find((item) => item.id === Number(joinButton.dataset.joinId))
+    if (!meeting || meeting.currentCount >= meeting.capacity) return
+    meeting.currentCount += 1
+    saveMeetings()
+    renderList()
+    showToast(meeting.currentCount >= meeting.capacity ? '모집이 완료됐어요! 🎉' : '밥약속에 참여했어요!')
+  }
 })
+
+document.addEventListener('submit', (event) => {
+  if (event.target.id !== 'meetingForm') return
+  event.preventDefault()
+  const formData = new FormData(event.target)
+  const meeting = {
+    id: Date.now(), place: formData.get('place').trim(), menu: formData.get('menu').trim(),
+    time: formData.get('time'), capacity: Number(formData.get('capacity')), currentCount: 1,
+    createdAt: new Date().toISOString(),
+  }
+  if (!meeting.place || !meeting.menu || !meeting.time) return
+  meetings.unshift(meeting)
+  saveMeetings()
+  renderList()
+  showToast('새 밥약속이 등록됐어요!')
+})
+
+renderList()

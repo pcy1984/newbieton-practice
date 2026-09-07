@@ -1,22 +1,80 @@
 import './style.css'
 
-const STORAGE_KEY = 'babguham-meetings'
 const app = document.querySelector('#app')
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
+
+const apiHeaders = {
+  apikey: SUPABASE_KEY,
+  Authorization: `Bearer ${SUPABASE_KEY}`,
+  'Content-Type': 'application/json',
+}
 
 const escapeHtml = (value) => String(value)
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#039;')
 
-const loadMeetings = () => {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? []
-  } catch {
-    return []
+const toMeeting = (row) => ({
+  id: row.id,
+  place: row.place,
+  menu: row.menu,
+  time: row.meeting_time,
+  capacity: row.capacity,
+  currentCount: row.current_count,
+  createdAt: row.created_at,
+})
+
+async function requestSupabase(path, options = {}) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    throw new Error('Supabase 환경변수가 설정되지 않았습니다.')
   }
+
+  const response = await fetch(`${SUPABASE_URL}${path}`, {
+    ...options,
+    headers: { ...apiHeaders, ...options.headers },
+  })
+  const body = await response.text()
+  const data = body ? JSON.parse(body) : null
+
+  if (!response.ok) {
+    throw new Error(data?.message || data?.hint || 'Supabase 요청에 실패했습니다.')
+  }
+  return data
 }
 
-const saveMeetings = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(meetings))
-let meetings = loadMeetings()
+let meetings = []
+
+async function loadMeetings() {
+  const rows = await requestSupabase('/rest/v1/meetings?select=*&order=created_at.desc')
+  meetings = rows.map(toMeeting)
+}
+
+async function createMeeting(meeting) {
+  const rows = await requestSupabase('/rest/v1/meetings', {
+    method: 'POST',
+    headers: { Prefer: 'return=representation' },
+    body: JSON.stringify({
+      place: meeting.place,
+      menu: meeting.menu,
+      meeting_time: meeting.time,
+      capacity: meeting.capacity,
+      current_count: 1,
+    }),
+  })
+  return toMeeting(rows[0])
+}
+
+async function joinMeeting(meeting) {
+  const rows = await requestSupabase(
+    `/rest/v1/meetings?id=eq.${meeting.id}&current_count=eq.${meeting.currentCount}`,
+    {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ current_count: meeting.currentCount + 1 }),
+    },
+  )
+  return rows[0] ? toMeeting(rows[0]) : null
+}
 
 function formatTime(time) {
   const [hour, minute] = time.split(':')
@@ -113,7 +171,8 @@ function renderCreate() {
           <button class="submit-button" type="submit">밥친구 모집하기 <span>→</span></button>
         </form>
       </section>
-    </main>`
+    </main>
+    <div class="toast" role="status" aria-live="polite"></div>`
   document.querySelector('input[name="place"]').focus()
 }
 
@@ -125,37 +184,68 @@ function showToast(message) {
   window.setTimeout(() => toast.classList.remove('toast--visible'), 2200)
 }
 
-document.addEventListener('click', (event) => {
+document.addEventListener('click', async (event) => {
   const viewButton = event.target.closest('[data-view]')
   const joinButton = event.target.closest('[data-join-id]')
   if (viewButton) {
     event.preventDefault()
-    viewButton.dataset.view === 'create' ? renderCreate() : renderList()
+    if (viewButton.dataset.view === 'create') {
+      renderCreate()
+    } else {
+      renderList()
+      try {
+        await loadMeetings()
+        renderList()
+      } catch (error) {
+        showToast(error.message)
+      }
+    }
   }
   if (joinButton) {
     const meeting = meetings.find((item) => item.id === Number(joinButton.dataset.joinId))
     if (!meeting || meeting.currentCount >= meeting.capacity) return
-    meeting.currentCount += 1
-    saveMeetings()
-    renderList()
-    showToast(meeting.currentCount >= meeting.capacity ? '모집이 완료됐어요! 🎉' : '밥약속에 참여했어요!')
+    joinButton.disabled = true
+    try {
+      const updatedMeeting = await joinMeeting(meeting)
+      if (!updatedMeeting) {
+        await loadMeetings()
+        renderList()
+        showToast('인원이 방금 변경됐어요. 다시 눌러주세요.')
+        return
+      }
+      meetings = meetings.map((item) => item.id === updatedMeeting.id ? updatedMeeting : item)
+      renderList()
+      showToast(updatedMeeting.currentCount >= updatedMeeting.capacity ? '모집이 완료됐어요! 🎉' : '밥약속에 참여했어요!')
+    } catch (error) {
+      joinButton.disabled = false
+      showToast(error.message)
+    }
   }
 })
 
-document.addEventListener('submit', (event) => {
+document.addEventListener('submit', async (event) => {
   if (event.target.id !== 'meetingForm') return
   event.preventDefault()
   const formData = new FormData(event.target)
   const meeting = {
-    id: Date.now(), place: formData.get('place').trim(), menu: formData.get('menu').trim(),
-    time: formData.get('time'), capacity: Number(formData.get('capacity')), currentCount: 1,
-    createdAt: new Date().toISOString(),
+    place: formData.get('place').trim(), menu: formData.get('menu').trim(),
+    time: formData.get('time'), capacity: Number(formData.get('capacity')),
   }
   if (!meeting.place || !meeting.menu || !meeting.time) return
-  meetings.unshift(meeting)
-  saveMeetings()
-  renderList()
-  showToast('새 밥약속이 등록됐어요!')
+  const submitButton = event.target.querySelector('button[type="submit"]')
+  submitButton.disabled = true
+  try {
+    const savedMeeting = await createMeeting(meeting)
+    meetings.unshift(savedMeeting)
+    renderList()
+    showToast('새 밥약속이 등록됐어요!')
+  } catch (error) {
+    submitButton.disabled = false
+    showToast(error.message)
+  }
 })
 
 renderList()
+loadMeetings()
+  .then(renderList)
+  .catch((error) => showToast(error.message))
